@@ -93,7 +93,7 @@ def generate_wiki_markup():
     return "\n".join(output)
 
 def write_records(data):
-    site = mwclient.Site("minecraftathome.miraheze.org", path="/w/")
+    site = mwclient.Site("minecraftathome.miraheze.org", path="/")
     site.login("MCAHBiomeRecordsBot", os.environ["MW_PASSWORD"])
 
     page = site.pages["Largest Biome Records"]
