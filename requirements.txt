@@ -1,1 +1,1 @@
-mwclient
+playwright
