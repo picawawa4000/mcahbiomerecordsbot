@@ -82,7 +82,7 @@ def generate_wiki_markup():
     ingest_sheet(load_csv(SBR_CSV_URL), biomes, "SBR")
     ingest_sheet(load_csv(LBR_CSV_URL), biomes, "LBR")
 
-    output = []
+    output = [f"The contents of this page were automatically generated from [https://docs.google.com/spreadsheets/d/1uiC9-eObIh16oEemAKQoRGp2elyv5nlDcnu_c5lxOtM/edit?gid=0#gid=0] on {date.today().isoformat()}."]
 
     for biome in sorted(biomes):
         output.append(build_biome_template(biome, biomes[biome]))
