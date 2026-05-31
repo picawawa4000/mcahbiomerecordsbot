@@ -33,7 +33,8 @@ def ingest_sheet(rows, biomes, record_type):
             "seed": row.get("Seed", "").strip(),
             "coords": f"{row.get('X', '').strip()}, {row.get('Z', '').strip()}",
             "size": row.get("Blocks^2", "").strip(),
-            "finder": row.get("Found By", "").strip()
+            "finder": row.get("Found By", "").strip(),
+            "date": row.get("Date last broken", "").strip()
         }
 
         if record_type == "SBR":
@@ -61,9 +62,10 @@ def build_biome_template(name, data):
             f"|sbr_seed={sbr['seed']}",
             f"|sbr_coords={sbr['coords']}",
             f"|sbr_size={sbr['size']}",
-            f"|sbr_finder={sbr['finder']}",
-            f"|sbr_date={today}"
+            f"|sbr_finder={sbr['finder']}"
         ])
+        if sbr['date']:
+            lines.append(f"|sbr_date={sbr['date']}")
 
     if "lbr" in data:
         lbr = data["lbr"]
@@ -72,9 +74,10 @@ def build_biome_template(name, data):
             f"|lbr_seed={lbr['seed']}",
             f"|lbr_coords={lbr['coords']}",
             f"|lbr_size={lbr['size']}",
-            f"|lbr_finder={lbr['finder']}",
-            f"|lbr_date={today}"
+            f"|lbr_finder={lbr['finder']}"
         ])
+        if lbr['date']:
+            lines.append(f"|lbr_date={lbr['date']}")
 
     lines.append("}}")
     lines.append("")
