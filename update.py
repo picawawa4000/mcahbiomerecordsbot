@@ -48,7 +48,7 @@ def build_biome_template(name, data):
     lines = [
         f"== {name} ==",
         "",
-        "{{Biome",
+        "{{Biome Size Record",
         f"|name={name}"
     ]
 
