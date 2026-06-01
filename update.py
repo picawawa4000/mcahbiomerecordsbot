@@ -10,6 +10,8 @@ from playwright.sync_api import sync_playwright
 SBR_CSV_URL = "https://docs.google.com/spreadsheets/d/1uiC9-eObIh16oEemAKQoRGp2elyv5nlDcnu_c5lxOtM/export?format=csv&gid=0"
 LBR_CSV_URL = "https://docs.google.com/spreadsheets/d/1uiC9-eObIh16oEemAKQoRGp2elyv5nlDcnu_c5lxOtM/export?format=csv&gid=397188942"
 
+WIKI_URL = "https://mcseedfinding.miraheze.org"
+
 def load_csv(url):
     response = requests.get(url, timeout=30, allow_redirects=True)
     print(response.status_code)
@@ -113,7 +115,7 @@ def run_bot(wiki_text: str):
         context = browser.new_context()
         page = context.new_page()
 
-        page.goto(f"https://minecraftathome.miraheze.org/wiki/Special:UserLogin")
+        page.goto(f"{WIKI_URL}/wiki/Special:UserLogin")
 
         # Wait for page + any JS challenge
         page.wait_for_load_state("networkidle")
@@ -128,7 +130,7 @@ def run_bot(wiki_text: str):
         page.wait_for_load_state("networkidle")
         time.sleep(2)
 
-        page.goto(f"https://minecraftathome.miraheze.org/wiki/Largest_Biomes_Records?action=edit")
+        page.goto(f"{WIKI_URL}/wiki/Largest_Biomes_Records?action=edit")
         page.wait_for_load_state("networkidle")
 
         textarea = page.locator("textarea#wpTextbox1")
