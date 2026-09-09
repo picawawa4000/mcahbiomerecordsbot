@@ -4,7 +4,6 @@ from io import StringIO
 from datetime import date
 #import mwclient
 import os
-import time
 from playwright.sync_api import sync_playwright
 
 SBR_CSV_URL = "https://docs.google.com/spreadsheets/d/1uiC9-eObIh16oEemAKQoRGp2elyv5nlDcnu_c5lxOtM/export?format=csv&gid=0"
@@ -119,34 +118,35 @@ def run_bot(wiki_text: str):
         context = browser.new_context()
         page = context.new_page()
 
-        page.goto(f"{WIKI_URL}/wiki/Special:UserLogin")
-
-        # Wait for page + any JS challenge
-        page.wait_for_load_state("networkidle")
+        # `networkidle` is deliberately not used here: Miraheze can keep
+        # background requests open after the document has loaded.
+        page.goto(
+            f"{WIKI_URL}/wiki/Special:UserLogin",
+            wait_until="domcontentloaded",
+        )
 
         # Fill login form
         page.fill('input[name="wpName"]', "MCAHBiomeRecordsBot")
         page.fill('input[name="wpPassword"]', PASSWORD)
 
-        page.click('button[name="wploginattempt"]')
+        with page.expect_navigation(wait_until="domcontentloaded"):
+            page.click('button[name="wploginattempt"]')
 
-        # Wait for login to complete
-        page.wait_for_load_state("networkidle")
-        time.sleep(2)
-
-        page.goto(f"{WIKI_URL}/wiki/Largest_Biomes_Records?action=edit")
-        page.wait_for_load_state("networkidle")
+        page.goto(
+            f"{WIKI_URL}/wiki/Largest_Biomes_Records?action=edit",
+            wait_until="domcontentloaded",
+        )
 
         textarea = page.locator("textarea#wpTextbox1")
         textarea.wait_for()
 
         textarea.fill(wiki_text)
 
-        page.click("input#wpSave")
-
-        # Wait for save completion
-        page.wait_for_load_state("networkidle")
-        time.sleep(2)
+        # Saving submits a form and navigates back to the article.  Waiting
+        # for that navigation verifies the submission without depending on
+        # unrelated background network activity.
+        with page.expect_navigation(wait_until="domcontentloaded"):
+            page.click("input#wpSave")
 
         print("Page updated successfully.")
 
