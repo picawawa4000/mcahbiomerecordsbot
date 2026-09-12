@@ -21,4 +21,5 @@ jobs:
       
       - run: python update.py
         env:
+          MW_OAUTH_TOKEN: ${{ secrets.MW_OAUTH_TOKEN }}
           MW_PASSWORD: ${{ secrets.MW_PASSWORD }}

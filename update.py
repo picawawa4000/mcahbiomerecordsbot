@@ -117,6 +117,21 @@ def wiki_api(session, params, *, post=False):
         params=None if post else params,
         timeout=30,
     )
+    # Report edge diagnostics on read-only queries instead of an opaque 403.
+    # Never print an authenticated response body in case it contains secrets.
+    if response.status_code == 403 and not post and params.get("action") == "query":
+        authenticated = "Authorization" in session.headers
+        body = ("[suppressed for authenticated request]" if authenticated
+                else " ".join(response.text.split())[:500])
+        raise RuntimeError(
+            "Wiki API rejected "
+            f"{'authenticated' if authenticated else 'anonymous'} query: HTTP 403; "
+            f"server={response.headers.get('Server', 'unknown')}; "
+            f"cf-ray={response.headers.get('CF-Ray', 'none')}; "
+            f"cf-mitigated={response.headers.get('CF-Mitigated', 'none')}; "
+            f"content-type={response.headers.get('Content-Type', 'unknown')}; "
+            f"body={body!r}"
+        )
     response.raise_for_status()
     result = response.json()
     if "error" in result:
@@ -128,32 +143,42 @@ def wiki_api(session, params, *, post=False):
 def run_bot(wiki_text: str):
     with requests.Session() as session:
         session.headers["User-Agent"] = BOT_USER_AGENT
+        oauth_token = os.environ.get("MW_OAUTH_TOKEN")
+        if oauth_token:
+            # An owner-only OAuth 2 token avoids storing the bot's password.
+            # Keep the same session for all requests so CDN cookies persist.
+            session.headers["Authorization"] = f"Bearer {oauth_token}"
+        else:
+            password = os.environ.get("MW_PASSWORD")
+            if not password:
+                raise RuntimeError("Set MW_OAUTH_TOKEN or MW_PASSWORD")
+            login_token = wiki_api(session, {
+                "action": "query", "meta": "tokens", "type": "login", "format": "json"
+            })["query"]["tokens"]["logintoken"]
 
-        login_token = wiki_api(session, {
-            "action": "query", "meta": "tokens", "type": "login", "format": "json"
-        })["query"]["tokens"]["logintoken"]
-
-        # Unlike the browser login page, clientlogin stays on the wiki's API
-        # even when CentralAuth redirects interactive logins to auth.miraheze.org.
-        login = wiki_api(session, {
-            "action": "clientlogin",
-            "username": BOT_USERNAME,
-            "password": os.environ["MW_PASSWORD"],
-            "loginreturnurl": f"{WIKI_URL}/wiki/{WIKI_PAGE.replace(' ', '_')}",
-            "logintoken": login_token,
-            "format": "json",
-        }, post=True)["clientlogin"]
-        if login.get("status") != "PASS":
-            raise RuntimeError(
-                f"Wiki login failed: {login.get('status')} "
-                f"({login.get('messagecode', 'interactive authentication required')})"
-            )
+            # Unlike the browser login page, clientlogin stays on the wiki's
+            # API when CentralAuth redirects interactive logins elsewhere.
+            login = wiki_api(session, {
+                "action": "clientlogin",
+                "username": BOT_USERNAME,
+                "password": password,
+                "loginreturnurl": f"{WIKI_URL}/wiki/{WIKI_PAGE.replace(' ', '_')}",
+                "logintoken": login_token,
+                "format": "json",
+            }, post=True)["clientlogin"]
+            if login.get("status") != "PASS":
+                raise RuntimeError(
+                    f"Wiki login failed: {login.get('status')} "
+                    f"({login.get('messagecode', 'interactive authentication required')})"
+                )
 
         edit_info = wiki_api(session, {
-            "action": "query", "meta": "tokens", "type": "csrf",
+            "action": "query", "meta": "tokens|userinfo", "type": "csrf",
             "prop": "revisions", "rvprop": "ids", "titles": WIKI_PAGE,
             "assert": "user", "format": "json",
         })["query"]
+        if edit_info["userinfo"]["name"] != BOT_USERNAME:
+            raise RuntimeError("Wiki credentials are not for the bot account")
         page = next(iter(edit_info["pages"].values()))
         if "missing" in page:
             raise RuntimeError(f"Wiki page does not exist: {WIKI_PAGE}")
