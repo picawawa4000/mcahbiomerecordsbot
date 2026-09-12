@@ -2,14 +2,21 @@ import csv
 import requests
 from io import StringIO
 from datetime import date
-#import mwclient
 import os
-from playwright.sync_api import sync_playwright
 
 SBR_CSV_URL = "https://docs.google.com/spreadsheets/d/1uiC9-eObIh16oEemAKQoRGp2elyv5nlDcnu_c5lxOtM/export?format=csv&gid=0"
 LBR_CSV_URL = "https://docs.google.com/spreadsheets/d/1uiC9-eObIh16oEemAKQoRGp2elyv5nlDcnu_c5lxOtM/export?format=csv&gid=397188942"
 
 WIKI_URL = "https://mcseedfinding.miraheze.org"
+WIKI_API_URL = f"{WIKI_URL}/w/api.php"
+WIKI_PAGE = "Largest Biomes Records"
+BOT_USERNAME = "MCAHBiomeRecordsBot"
+# Miraheze rejects the default Python requests user agent. Include a way to
+# contact the bot operator, as requested by its user-agent policy.
+BOT_USER_AGENT = (
+    "MCAHBiomeRecordsBot/1.0 "
+    "(https://github.com/picawawa4000/mcahbiomerecordsbot)"
+)
 
 def load_csv(url):
     response = requests.get(url, timeout=30, allow_redirects=True)
@@ -102,55 +109,67 @@ def generate_wiki_markup():
 
     return "\n".join(output)
 
-#import os
-#import time
-#from playwright.sync_api import sync_playwright
+def wiki_api(session, params, *, post=False):
+    request = session.post if post else session.get
+    response = request(
+        WIKI_API_URL,
+        data=params if post else None,
+        params=None if post else params,
+        timeout=30,
+    )
+    response.raise_for_status()
+    result = response.json()
+    if "error" in result:
+        error = result["error"]
+        raise RuntimeError(f"Wiki API error {error.get('code')}: {error.get('info')}")
+    return result
 
-PASSWORD = os.environ["MW_PASSWORD"]
 
 def run_bot(wiki_text: str):
-    with sync_playwright() as p:
-        browser = p.chromium.launch(
-            headless=True,
-            args=["--no-sandbox"]
-        )
+    with requests.Session() as session:
+        session.headers["User-Agent"] = BOT_USER_AGENT
 
-        context = browser.new_context()
-        page = context.new_page()
+        login_token = wiki_api(session, {
+            "action": "query", "meta": "tokens", "type": "login", "format": "json"
+        })["query"]["tokens"]["logintoken"]
 
-        # `networkidle` is deliberately not used here: Miraheze can keep
-        # background requests open after the document has loaded.
-        page.goto(
-            f"{WIKI_URL}/wiki/Special:UserLogin",
-            wait_until="domcontentloaded",
-        )
+        # Unlike the browser login page, clientlogin stays on the wiki's API
+        # even when CentralAuth redirects interactive logins to auth.miraheze.org.
+        login = wiki_api(session, {
+            "action": "clientlogin",
+            "username": BOT_USERNAME,
+            "password": os.environ["MW_PASSWORD"],
+            "loginreturnurl": f"{WIKI_URL}/wiki/{WIKI_PAGE.replace(' ', '_')}",
+            "logintoken": login_token,
+            "format": "json",
+        }, post=True)["clientlogin"]
+        if login.get("status") != "PASS":
+            raise RuntimeError(
+                f"Wiki login failed: {login.get('status')} "
+                f"({login.get('messagecode', 'interactive authentication required')})"
+            )
 
-        # Fill login form
-        page.fill('input[name="wpName"]', "MCAHBiomeRecordsBot")
-        page.fill('input[name="wpPassword"]', PASSWORD)
+        edit_info = wiki_api(session, {
+            "action": "query", "meta": "tokens", "type": "csrf",
+            "prop": "revisions", "rvprop": "ids", "titles": WIKI_PAGE,
+            "assert": "user", "format": "json",
+        })["query"]
+        page = next(iter(edit_info["pages"].values()))
+        if "missing" in page:
+            raise RuntimeError(f"Wiki page does not exist: {WIKI_PAGE}")
 
-        with page.expect_navigation(wait_until="domcontentloaded"):
-            page.click('button[name="wploginattempt"]')
-
-        page.goto(
-            f"{WIKI_URL}/wiki/Largest_Biomes_Records?action=edit",
-            wait_until="domcontentloaded",
-        )
-
-        textarea = page.locator("textarea#wpTextbox1")
-        textarea.wait_for()
-
-        textarea.fill(wiki_text)
-
-        # Saving submits a form and navigates back to the article.  Waiting
-        # for that navigation verifies the submission without depending on
-        # unrelated background network activity.
-        with page.expect_navigation(wait_until="domcontentloaded"):
-            page.click("input#wpSave")
-
+        result = wiki_api(session, {
+            "action": "edit",
+            "title": WIKI_PAGE,
+            "text": wiki_text,
+            "baserevid": page["revisions"][0]["revid"],
+            "token": edit_info["tokens"]["csrftoken"],
+            "assert": "user",
+            "format": "json",
+        }, post=True)["edit"]
+        if result.get("result") != "Success":
+            raise RuntimeError(f"Wiki edit failed: {result.get('result', 'unknown result')}")
         print("Page updated successfully.")
-
-        browser.close()
 
 if __name__ == "__main__":
     wiki_text = generate_wiki_markup()

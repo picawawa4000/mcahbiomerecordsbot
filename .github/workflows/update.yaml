@@ -19,8 +19,6 @@ jobs:
 
       - run: pip install -r requirements.txt
       
-      - run: playwright install chromium
-
       - run: python update.py
         env:
           MW_PASSWORD: ${{ secrets.MW_PASSWORD }}
