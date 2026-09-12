@@ -3,6 +3,8 @@ import requests
 from io import StringIO
 from datetime import date
 import os
+from urllib.parse import unquote
+from playwright.sync_api import TimeoutError as PlaywrightTimeoutError, sync_playwright
 
 SBR_CSV_URL = "https://docs.google.com/spreadsheets/d/1uiC9-eObIh16oEemAKQoRGp2elyv5nlDcnu_c5lxOtM/export?format=csv&gid=0"
 LBR_CSV_URL = "https://docs.google.com/spreadsheets/d/1uiC9-eObIh16oEemAKQoRGp2elyv5nlDcnu_c5lxOtM/export?format=csv&gid=397188942"
@@ -140,37 +142,102 @@ def wiki_api(session, params, *, post=False):
     return result
 
 
+def run_bot_browser(wiki_text: str, password: str):
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True, args=["--no-sandbox"])
+        try:
+            page = browser.new_page()
+            page.goto(
+                f"{WIKI_URL}/wiki/Special:UserLogin",
+                wait_until="domcontentloaded",
+                timeout=60000,
+            )
+
+            # The login form may appear only after Cloudflare's JavaScript
+            # check and CentralAuth's cross-domain redirects have completed.
+            try:
+                page.locator('input[name="wpName"]').wait_for(state="visible", timeout=90000)
+            except PlaywrightTimeoutError as exc:
+                raise RuntimeError(
+                    "Browser never reached the wiki login form; Cloudflare may "
+                    "require an interactive challenge. "
+                    f"URL={page.url.partition('?')[0]!r}; title={page.title()!r}"
+                ) from exc
+
+            page.locator('input[name="wpName"]').fill(BOT_USERNAME)
+            page.locator('input[name="wpPassword"]').fill(password)
+            page.locator('button[name="wploginattempt"]').click(timeout=60000)
+            try:
+                page.wait_for_url(
+                    lambda url: url.hostname == "mcseedfinding.miraheze.org",
+                    timeout=60000,
+                )
+            except PlaywrightTimeoutError as exc:
+                raise RuntimeError(
+                    "Browser login did not return to the wiki; "
+                    f"URL={page.url.partition('?')[0]!r}; title={page.title()!r}"
+                ) from exc
+
+            article_url = f"{WIKI_URL}/wiki/{WIKI_PAGE.replace(' ', '_')}"
+            page.goto(
+                f"{article_url}?action=edit",
+                wait_until="domcontentloaded",
+                timeout=60000,
+            )
+            textarea = page.locator("textarea#wpTextbox1")
+            try:
+                textarea.wait_for(state="visible", timeout=90000)
+            except PlaywrightTimeoutError as exc:
+                raise RuntimeError(
+                    "Browser never reached the wiki edit form; Cloudflare may "
+                    "require an interactive challenge. "
+                    f"URL={page.url.partition('?')[0]!r}; title={page.title()!r}"
+                ) from exc
+
+            # This page is anonymously editable, so a textarea alone does
+            # not prove login. Check the account link and non-anonymous CSRF
+            # token in the page HTML without touching the challenged API.
+            account_link = page.locator("#pt-userpage a").first
+            account_href = account_link.get_attribute("href") if account_link.count() else ""
+            account_name = unquote(account_href or "").replace("_", " ")
+            edit_token = page.locator('input[name="wpEditToken"]').first.input_value()
+            if BOT_USERNAME not in account_name or edit_token == "+\\":
+                raise RuntimeError(
+                    "Browser login did not authenticate the bot account; "
+                    f"URL={page.url.partition('?')[0]!r}; title={page.title()!r}"
+                )
+
+            textarea.fill(wiki_text)
+
+            with page.expect_navigation(wait_until="domcontentloaded", timeout=60000):
+                page.locator("input#wpSave").click()
+            if page.url.partition("?")[0] != article_url or textarea.count():
+                raise RuntimeError(
+                    "Wiki did not return to the article after saving; "
+                    f"URL={page.url.partition('?')[0]!r}; title={page.title()!r}"
+                )
+            print("Page updated successfully.")
+        finally:
+            browser.close()
+
+
 def run_bot(wiki_text: str):
+    # Prefer the browser when a password is configured: the API's anonymous
+    # and OAuth requests can both be stopped by the Cloudflare edge challenge.
+    password = os.environ.get("MW_PASSWORD")
+    if password:
+        run_bot_browser(wiki_text, password)
+        return
+
+    oauth_token = os.environ.get("MW_OAUTH_TOKEN")
+    if not oauth_token:
+        raise RuntimeError("Set MW_PASSWORD or MW_OAUTH_TOKEN")
+
     with requests.Session() as session:
         session.headers["User-Agent"] = BOT_USER_AGENT
-        oauth_token = os.environ.get("MW_OAUTH_TOKEN")
-        if oauth_token:
-            # An owner-only OAuth 2 token avoids storing the bot's password.
-            # Keep the same session for all requests so CDN cookies persist.
-            session.headers["Authorization"] = f"Bearer {oauth_token}"
-        else:
-            password = os.environ.get("MW_PASSWORD")
-            if not password:
-                raise RuntimeError("Set MW_OAUTH_TOKEN or MW_PASSWORD")
-            login_token = wiki_api(session, {
-                "action": "query", "meta": "tokens", "type": "login", "format": "json"
-            })["query"]["tokens"]["logintoken"]
-
-            # Unlike the browser login page, clientlogin stays on the wiki's
-            # API when CentralAuth redirects interactive logins elsewhere.
-            login = wiki_api(session, {
-                "action": "clientlogin",
-                "username": BOT_USERNAME,
-                "password": password,
-                "loginreturnurl": f"{WIKI_URL}/wiki/{WIKI_PAGE.replace(' ', '_')}",
-                "logintoken": login_token,
-                "format": "json",
-            }, post=True)["clientlogin"]
-            if login.get("status") != "PASS":
-                raise RuntimeError(
-                    f"Wiki login failed: {login.get('status')} "
-                    f"({login.get('messagecode', 'interactive authentication required')})"
-                )
+        # An owner-only OAuth 2 token avoids storing the bot's password.
+        # Keep the same session for all requests so CDN cookies persist.
+        session.headers["Authorization"] = f"Bearer {oauth_token}"
 
         edit_info = wiki_api(session, {
             "action": "query", "meta": "tokens|userinfo", "type": "csrf",
